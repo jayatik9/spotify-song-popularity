@@ -1,0 +1,533 @@
+---
+title: "Spotify Song Popularity Analysis"
+author: "Anuja Jain ,Jayati Kaul , Shatawari Jain , Sithara Vanmerimeethal Paleri"
+date: "2/21/2020"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE,warning=FALSE,message=FALSE}
+options(scipen = 999)
+set.seed(500)
+library(tidyverse)
+library(randomForest) 
+library(dplyr)
+library(purrr)
+library(caret)
+library(rsample)
+library(kknn)
+library(corrplot)
+library(ggplot2)
+library(DMwR)
+library(NeuralNetTools)
+library(neuralnet)
+#install.packages("optimalCutpoints")
+library(OptimalCutpoints)
+library(InformationValue)
+#install.packages("corrplot")
+```
+
+## Project description
+
+![](https://spotifyhrblog.files.wordpress.com/2018/02/inclusion-image.jpg)
+
+As we know Spotify is one of the most popular audio streaming platforms around the globe. Here we are trying to predict the popularity of the song based on different features available. Dataset was available on Kaggle.
+
+On the technical side, Spotify provides an interesting look into their listening data. Not just the popularity of tracks, but also features of the tracks they have in their library.<br>
+
+Project Context - Here, we are trying to predict the popularity of songs based on the various audio features of each track in the selected dataset. 
+
+Business Problem - How can different features impact the popularity of the songs irrespective of the artist the songs were sung by. Some of the features like danceability, loudness, acousticness etc which are difficult to understand but are still capable of finding out weather the song added to the spotify database will be popular or not. 
+
+Goal - The question we’ll be looking at is - Can we predict a track’s popularity from key features about the song? This will be helpful for editors of the song if based on the analysis any of features that can be edited before releasing it on spotify.
+
+
+## Data Exploration and Preprocessing
+
+The selected dataset contains below features - 
+
+*Artist_name: Name of the the artist. <br>
+*Track_id : Uniques ID of the track. <br>
+*Track_name : Name of the track.<br>
+*Duration_ms : Duration of the track in milli-second.<br>
+*Acousticness: A confidence measure from 0.0 to 1.0 of whether the track is acoustic. 1.0 represents high confidence the track is acoustic.<br>
+*Danceability: Danceability describes how suitable a track is for dancing based on a combination of musical elements including tempo, rhythm stability, beat strength, and overall regularity. A value of 0.0 is least danceable and 1.0 is most danceable.<br>
+*Energy: Energy is a measure from 0.0 to 1.0 and represents a perceptual measure of intensity and activity. Typically, energetic tracks feel fast, loud, and noisy. For example, death metal has high energy, while a Bach prelude scores low on the scale. Perceptual features contributing to this attribute include dynamic range, perceived loudness, timbre, onset rate, and general entropy.<br>
+*Liveness: Detects the presence of an audience in the recording. Higher liveness values represent an increased probability that the track was performed live. A value above 0.8 provides a strong likelihood that the track is live.<br>
+*Loudness: the overall loudness of a track in decibels (dB). Loudness values are averaged across the entire track and are useful for comparing relative loudness of tracks. Loudness is the quality of a sound that is the primary psychological correlate of physical strength (amplitude). Values typical range between -60 and 0 db. <br>
+*Speechiness: Speechiness detects the presence of spoken words in a track. The more exclusively speech-like the recording (e.g. talk show, audiobook, poetry), the closer to 1.0 the attribute value. Values above 0.66 describe tracks that are probably made entirely of spoken words. Values between 0.33 and 0.66 describe tracks that may contain both music and speech, either in sections or layered, including such cases as rap music. Values below 0.33 most likely represent music and other non-speech-like tracks.<br>
+*Valence: A measure from 0.0 to 1.0 describing the musical positiveness conveyed by a track. Tracks with high valence sound more positive (e.g. happy, cheerful, euphoric), while tracks with low valence sound more negative (e.g. sad, depressed, angry).<br>
+*Tempo: The overall estimated tempo of a track in beats per minute (BPM). In musical terminology, tempo is the speed or pace of a given piece and derives directly from the average beat duration.<br>
+
+In order to process data we firstly removed all the rows with missing data. Also, to get insights on data and check if we have any outliers we performed below visualization.  
+
+```{r warning=FALSE,error=FALSE,message=FALSE}
+df <- read_csv("features.csv")
+df <- na.omit(df)
+df<-sample_n(df, 50000)
+df <- df %>%
+  mutate(pop_class = ifelse(popularity < quantile(popularity,0.55),"unpopular","popular"))
+df <- df %>%
+  mutate(pop_factor = ifelse(pop_class =="unpopular",0,1))
+
+
+head(df)
+```
+
+
+
+### Removing Outliers 
+
+Looking at the data it seems that there might be some outliers in duration that may skew analysis. So using box plot we will identify the outliers and we can isolate any values that fall outside of a given range. The default range which we considered is the interquartile range, or the spread from the 25th to 50th percentile and in order to widen the range we multipled by 4. The first boc plot displays the outliers. We can see there are approximately 1300 songs with skewed duration value to removing these usinf filter. The second box plot displayes the result after removal of ouliers. 
+
+```{r outlier,message=FALSE,warning=FALSE}
+with_outliers <- df %>%
+  ggplot(aes(y = duration_ms)) +
+  geom_boxplot(color = 'red', coef = 4) +
+  coord_flip() +
+  labs(title = 'Duration with outliers')
+
+duration_outliers <- boxplot(df$duration_ms, 
+                             plot = FALSE, range = 4)$out 
+
+df_cleaned <- df %>%
+  filter(!duration_ms %in% duration_outliers)
+
+
+without_outliers <- df_cleaned %>%
+  ggplot(aes(y = duration_ms)) +
+  geom_boxplot(color = 'red', coef = 4) +
+  coord_flip() +
+  labs(title = 'Duration, outliers removed')
+
+gridExtra::grid.arrange(with_outliers, without_outliers, ncol = 1)
+
+```
+
+
+### Correlation between variables
+
+Using the corrplot we are trying to figure out the correlation between all the audio features of the songs in the dataset. Energy and loudness are fairly highly correlated. Energy and acousticness are negatively correlated, along with the positive correlation between danceability and valence. This correlation makes sense as happier songs lead to more dancing. Liveness, valence, and energy are clustered together, as are speechiness and danceability.
+
+
+```{r cor,message=FALSE,warning=FALSE}
+Spotify_df = df_cleaned[, c(4,5,7,10,11,12,13,16,17)] 
+mtCor <- cor(Spotify_df)
+corrplot(mtCor, method = "ellipse", type = "upper", tl.srt = 45, main = "Audio Feature Correlation")
+
+```
+
+### Top 20 Artists dominating the Top List
+
+We have many artists which are appearing so many times in the datasets with different song entries. Using the below graph we can determine the list of top 20 artists who appears the maximum times in the datasets. Number of songs entries definitey have impact on popularity as more the songs more will be the popularity. So before getting into predicting popularity let us see the top 20 artist based on the number of times they are appearing in the datasets. We also can see that there is a huge difference in the number of times the top most artist appeared than the one at 20th position. So it seems Johann Sebastian Bach is topping the chart with maximun number of entries followed by Wolfgang.
+
+```{r,message=FALSE,warning=FALSE}
+top_artists <- df_cleaned %>%
+            group_by(artist_name)  %>%
+            summarise(n_apperance = n()) %>%
+            filter(n_apperance > 1) %>%
+            arrange(desc(n_apperance))
+top_artists$artist_name <- factor(top_artists$artist_name, 
+                              levels = top_artists$artist_name[order(top_artists$n_apperance)])
+top_artists <- top_artists[1:20 , ]
+
+ggplot(top_artists, aes(x = artist_name, y = n_apperance)) +
+  geom_bar(stat = "identity",  fill = "tomato2", width = 0.6 ) + 
+  labs(title = "Top 20 Artists of 2017", x = "Artists", 
+       y = "Number of Apperance") +
+  theme(plot.title = element_text(size=15,hjust=-.3,face = "bold"), 
+        axis.title = element_text(size=12)) +
+  geom_text(aes(label=n_apperance), hjust = 2, size = 3, color = 'white') +
+  coord_flip()
+
+```
+
+### Density Distribution plot of Popularity 
+
+The below graph is to display the distribution of popularity in the data set. This distribution is right skewed. This is dataset on popularity is not a normal distribution. The graph also displays the mean, medium and quantitle. 
+
+```{r,message=FALSE,warning=FALSE}
+popular_df <- data.frame(x = log(df_cleaned$popularity + 1))
+Log_pol <- popular_df %>%
+  ggplot(aes(x=x, fill = '#AA66FF'))+
+  geom_histogram(aes(y=..density..), color = 'black', fill='#AA66FF')+
+  geom_density(aes(y=..density..),color = 'black',fill = 'grey',  alpha = 0.5,
+               kernel='gaussian')+
+  geom_vline(aes(xintercept = mean(x)),color = 'red', linetype = 'dashed')+
+  geom_vline(aes(xintercept = median(x)),color = 'blue', linetype = 'dashed')+
+  geom_vline(aes(xintercept = quantile(x, probs = 0.25)),color = 'black')+
+  geom_vline(aes(xintercept = quantile(x, probs = 0.75)),color = 'black')+
+  theme_minimal()
+Log_pol
+```
+
+### Top 5 Songs and their Variables Value
+
+The below mentioned graph is to get details on the avaliable variables for top 5 songs. We took the Top 5 songs, we can see they all demonstrated high level of danceability, valence, energy. In general, People like happy, positive and enviograted feelings. They all tends to focus more on the energy, danceability, and valences of a song.
+
+```{r,message=FALSE,warning=FALSE}
+#Data preparation for plot
+topSongs <- df_cleaned %>% 
+  arrange(desc(popularity)) %>%
+  slice(1:5) %>%
+  dplyr::select(artist_name, acousticness,danceability, energy, liveness, 
+         speechiness, valence) %>%
+  gather(key = "variables", value , -artist_name)
+
+#Plot
+ggplot(data=topSongs, aes(x=variables, y=value))+
+  geom_bar(aes(y=value, fill=artist_name),stat="identity", alpha=0.8 , position="dodge")+ 
+  ylab("Value")+ 
+  xlab("Variables to a song")+
+  coord_flip()+
+  ggtitle("Top 5 songs in Spotify 2017 ")
+```
+
+### Top Artists by the Total Playing Time
+
+The below graph is to display Top Artist by their total playing time. And we can see that the playing time is directly proportional to their appearances. We can see that Johann Sebastian Bach and Wolfgang is topping this chart. 
+
+```{r,message=FALSE,warning=FALSE}
+top_by_playtime <-  df_cleaned %>%
+  group_by(artist_name)  %>%
+  summarise(time = sum(duration_ms)) %>%
+  arrange(desc(time)) %>%
+  top_n(20)
+
+ggplot(top_by_playtime, aes(x=reorder(artist_name, time), y=time, color=artist_name)) +
+  geom_point(size=3) + 
+  geom_segment(aes(x=artist_name,xend=artist_name, y=0, yend=time)) +
+  labs(title = "Top Artists by Playing time", x='',y='') +
+  theme_bw() +
+  theme(legend.position = 'none', plot.title = element_text(size=17,hjust = 0.5, face = "bold"), axis.title.y = element_text(face = "bold"), axis.title.x = element_text(angle = 120)) +
+  coord_flip()
+```
+
+### Prosessing For Modelling
+
+
+## Modelling Techniques
+
+### Random Forest Model
+Here we are predicting the popularity class which we have created eairlier. We can see that the accuraccy is 0.50 which is very low and need improvements and still doing feature engineering to select better predictors for better results.
+
+```{r Random Forest,message=FALSE,warning=FALSE}
+#RF_df$time_signature=as.factor(RF_df$time_signature)
+RF_df <- df_cleaned[, c(4:19)]
+
+RF_df[c(1,2,3,4,5,7,8,10,11,13)] <- lapply(RF_df[c(1,2,3,4,5,7,8,10,11,13)], function(x) c(scale(x)))
+#RF_df_pca <- prcomp(RF_df[,c(1:13,16)], center = TRUE,scale. = TRUE)
+#summary(RF_df_pca)
+
+selected.var <- c("acousticness","danceability","speechiness","liveness","mode","valence",
+                  "pop_factor","key","energy","instrumentalness","tempo","loudness","time_signature",
+                  "duration_ms")
+train.index <- sample(c(1:dim(RF_df)[1]), dim(RF_df)[1]*0.6)  
+train.df <- RF_df[train.index, selected.var]
+valid.df <- RF_df[-train.index, selected.var]
+rf <- randomForest(as.factor(pop_factor) ~ ., data = train.df, ntree = 150, 
+                   mtry = 4, nodesize = 10, importance = TRUE)
+#plot(rf)
+```
+
+```{r,message=FALSE,warning=FALSE} 
+rf.pred <- predict(rf, valid.df)
+caret::confusionMatrix(rf.pred, as.factor(valid.df$pop_factor))
+
+```
+
+### Classification using KNN - 3-nearest neighbours model
+ 
+Here we are classifing the popularity class which we have created eairlier. We can see that the accuraccy is less than 0.50 which is very low and need improvements and still doing feature engineering to select better predictors for better results.
+```{r KNN,message=FALSE,warning=FALSE}
+Knn_df = RF_df
+#rm(RF_df)
+
+Knn_selected.var <- c("acousticness","danceability","speechiness","liveness","mode","valence",
+                  "pop_factor","key","energy","instrumentalness","tempo","loudness","time_signature","duration_ms")
+knn_train.index <- sample(c(1:dim(Knn_df)[1]), dim(Knn_df)[1]*0.6)  
+knn_train.df <- Knn_df[knn_train.index , Knn_selected.var]
+knn_valid.df <- Knn_df[-knn_train.index , Knn_selected.var]
+#target<-Knn_df[knn_train.index,16]
+knn_train.df <- as.data.frame(knn_train.df)
+knn_valid.df <- as.data.frame(knn_valid.df)
+#nn3 <- kNN(as.numeric(pop_factor) ~ .,knn_train.df ,knn_valid.df ,norm=TRUE,k=3)
+
+# Find optimal K
+grid1 <- expand.grid(.k = seq(2, 10, by = 1))
+control <- trainControl(method = "cv",
+                        number = 5,
+                        savePredictions = 'final',
+                        classProbs = T)
+knn.train <- train(pop_factor ~ ., data = knn_train.df,
+                   method = "knn",
+                   trControl = control,
+                   tuneGrid = grid1)
+knn.pred <- predict(knn.train, newdata = knn_valid.df)
+#caret::confusionMatrix(as.factor(knn.pred), as.factor(knn_valid.df$pop_factor))
+```
+
+
+### Neural Network
+We applied a Neural Network Classification Model to our data to find out whether a song popular or not. We used two hidden layers with 3 and 2 neurons in each layer respectively. From this model, we get an accuracy of   48%. Which is not that good, we are still trying to improve it for better prediction accuracy. Also, we get variable importance from this model.
+
+```{r nn,warning=FALSE,message=FALSE,fig.align='center'}
+
+data_nn=Knn_df
+#rm(RF_df,Knn_df,Spotify_df,mtcor,with_outliers,without_outliers,duration_outliers)
+
+index <- sample(1:nrow(data_nn),round(0.6*nrow(data_nn)))
+train_ <- data_nn[index,c(1,2,3,4,5,6,7,8,9,10,11,12,13,16)]
+test_ <- data_nn[-index,c(1,2,3,4,5,6,7,8,9,10,11,12,13,16)]
+
+#data_nn$time_signature=as.numeric(data_nn$time_signature)
+
+###Neural Network
+#library(neuralnet)
+n <- names(train_)
+f <- as.formula(paste("pop_factor ~", paste(n[!n %in% "pop_factor"], collapse = " + ")))
+nn <- neuralnet(f,data=train_,hidden=2,act.fct ="logistic",linear.output=F)
+# nn <- neuralnet(pop_factor~ acousticness+danceability+duration_ms+energy+instrumentalness+key+liveness
+#                  +loudness+mode+speechiness+tempo+ time_signature+valence,data=train_,hidden=c(3,2),act.fct =
+#                    "logistic",linear.output=F)
+
+
+training.prediction <- compute(nn, train_[1:13])
+training.class <- apply(training.prediction$net.result,1,which.max)-1
+caret::confusionMatrix(as.factor(training.class),
+                       as.factor(train_$pop_factor))
+
+# tr=predict(nn,train_,type="class")
+# caret::confusionMatrix(as.factor(tr),as.factor(train_$pop_factor))
+
+validation.prediction <- compute(nn, test_[1:13])
+validation.class <-apply(validation.prediction$net.result,1,which.max)-1
+caret::confusionMatrix(as.factor(validation.class), as.factor(test_$pop_factor))
+
+
+
+```
+
+
+#### Variable Importance by neutral network
+```{r }
+# Plot neural net
+plot(nn)
+# get the neural weights
+neuralweights(nn)
+# Plot the importance
+olden(nn)
+
+```
+
+
+### Logistic Regression
+We applied Logistic Regression to our data to find out whether a song popular or not. We used many variables for our model and got an accuracy of 61%.  We are still advancing our research to get better accuracy,but as of now this is our best model.
+
+```{r logit,warning=FALSE,message=FALSE,fig.align='center'}
+
+
+var <- c("acousticness","danceability","speechiness","liveness","mode","valence",
+                  "pop_factor","key","energy","instrumentalness","tempo","loudness","time_signature","duration_ms")
+
+index <- sample(c(1:dim(RF_df)[1]), dim(RF_df)[1]*0.6)  
+train_ <- RF_df[index , var]
+test_ <- RF_df[-index , var]
+
+
+mylogit <- glm(pop_factor~ danceability+instrumentalness+key+liveness+energy
+                +loudness+mode+speechiness+valence,data=train_,
+               family="binomial"(link="logit"))
+
+
+glm.probs <- predict(mylogit, 
+                    newdata = test_, 
+                    type = "response")
+
+glm.pred <- ifelse(glm.probs > 0.5, "Popular", "Umpopular")
+
+glm.pred<-as.factor(glm.pred)
+
+summary(mylogit)
+
+optCutOff <- optimalCutoff(test_$pop_factor, glm.probs)[1] 
+plotROC(test_$pop_factor,glm.probs)
+caret::confusionMatrix(data = as.factor(as.numeric(glm.probs>0.5)), 
+                       reference = as.factor(test_$pop_factor))
+
+```
+
+### Ensemble Method
+We have applied ensemble method which combines multiple models of Random Forest, Logistic Regression and Naive Bayes to predict the accuracy. We have computed the confusion matrix for both models and found that random forest has an accuracy of 53% as opposed to Naive Bayes’  47%.  We are planning to take the majority of votes to predict the classes by different methods.
+```{r Ensemble,warning=FALSE,message=FALSE,fig.align='center'}
+
+featuresDf<- data.frame(data_nn)
+
+# transform Popularity into categorical variable
+sapply(featuresDf,class)
+
+featuresDf=featuresDf[,-14:-15]
+
+featuresDf$pop_factor = factor(featuresDf$pop_factor,levels=c(0,1),labels=c("0","1"))
+# Make class levels valid R variable names 
+levels(featuresDf$pop_factor) <- make.names(levels(factor(featuresDf$pop_factor)))
+
+# partition the data
+train.index <- sample(c(1:dim(featuresDf)[1]), dim(featuresDf)[1]*0.6)  
+train.df <- featuresDf[train.index, ]
+valid.df <- featuresDf[-train.index, ]
+
+# Build an Ensemble Model with Multiple Types of Models
+# Defining the training controls for multiple models
+fitControl <- trainControl(
+  method = "cv",
+  number = 5,
+  savePredictions = 'final',
+  classProbs = T)
+
+#Defining the predictors and outcome
+predictors<-c("acousticness","danceability","duration_ms", "energy", "instrumentalness","key","liveness","loudness",
+              "mode","speechiness", "tempo","time_signature","valence")
+outcomeName<-c("pop_factor")
+
+#Training a random forest model
+model_rf<-train(train.df[,predictors],train.df[,outcomeName],method='rf',
+                trControl=fitControl,tuneLength=3)
+#Predicting using random forest model
+valid.df$pred_rf<-predict(object = model_rf,valid.df[,predictors])
+valid.df$pred_rf.prob<-predict(object = model_rf,valid.df[,predictors],type="prob")
+#Checking the accuracy of the random forest model
+caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_rf)
+
+#Training a Logistic regression model
+model_lr<-train(train.df[,predictors],train.df[,outcomeName],method='glm',
+                trControl=fitControl,tuneLength=3)
+#Predicting using logistic model
+valid.df$pred_lr<-predict(object = model_lr,valid.df[,predictors])
+valid.df$pred_lr.prob<-predict(object = model_lr,valid.df[,predictors],type="prob")
+#Checking the accuracy of the logistic model
+caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_lr)
+
+#Training a Naive Bayes model
+model_nb<-train(train.df[,predictors],train.df[,outcomeName],method='nb',
+                trControl=fitControl,tuneLength=3)
+#Predicting using Naive Bayes model
+valid.df$pred_nb<-predict(object = model_nb,valid.df[,predictors])
+valid.df$pred_nb.prob<-predict(object = model_nb,valid.df[,predictors],type="prob")
+#Checking the accuracy of the Naive Bayes model
+caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_nb)
+
+```
+
+```{r Gains,warning=FALSE,message=FALSE,fig.align='center'}
+# install.packages("gains")
+library(gains)
+valid.df$pop_factor.n = ifelse(valid.df$pop_factor == "X1", 1, 0)
+valid.df$pred_rf.n = ifelse(valid.df$pred_rf == "X1", 1, 0)
+valid.df$pred_lr.n = ifelse(valid.df$pred_lr == "X1", 1, 0)
+valid.df$pred_nb.n = ifelse(valid.df$pred_nb == "X1", 1, 0)
+```
+
+
+```{r GainsPlot,warning=FALSE,message=FALSE,fig.align='center'}
+# Gains: Random Forest
+gain.rf <- gains(valid.df$pop_factor.n, valid.df$pred_rf.prob$X1, groups=10)
+# Gains: Logistic Regression
+gain.lr <- gains(valid.df$pop_factor.n, valid.df$pred_lr.prob$X1, groups=10)
+# Gains: Naive Bayes
+gain.nb <- gains(valid.df$pop_factor.n, valid.df$pred_nb.prob$X1, groups=10)
+```
+
+```{r LiftChart,warning=FALSE,message=FALSE,fig.align='center'}
+# Plot lift charts
+plot(c(0, gain.rf$cume.pct.of.total*sum(valid.df$pop_factor.n)) ~ c(0, gain.rf$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative", type="l", col="red")
+par(new=TRUE)
+plot(c(0, gain.lr$cume.pct.of.total*sum(valid.df$pop_factor.n)) ~ c(0, gain.lr$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative", type="l", col="green")
+par(new=TRUE)
+plot(c(0, gain.nb$cume.pct.of.total*sum(valid.df$pop_factor.n)) ~ c(0, gain.nb$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative", type="l", col="blue")
+lines(c(0,sum(valid.df$pop_factor.n))~c(0,dim(valid.df)[1]), col="gray", lty=2)
+```
+
+```{r deciles,warning=FALSE,message=FALSE,fig.align='center'}
+# compute deciles and plot decile-wise chart
+par(mfrow=c(1,3))
+dec.rf <- gain.rf$mean.resp/mean(valid.df$pop_factor.n)
+barplot(dec.rf, names.arg = gain.rf$depth, ylim = c(0,9), 
+        xlab = "Percentile", ylab = "Mean Response", main = "Decile-wise: Random Forest")
+dec.lr <- gain.lr$mean.resp/mean(valid.df$pop_factor.n)
+barplot(dec.lr, names.arg = gain.lr$depth, ylim = c(0,9), 
+        xlab = "Percentile", ylab = "Mean Response", main = "Decile-wise: Logistic Regression")
+dec.nb <- gain.nb$mean.resp/mean(valid.df$pop_factor.n)
+barplot(dec.nb, names.arg = gain.nb$depth, ylim = c(0,9), 
+        xlab = "Percentile", ylab = "Mean Response", main = "Decile-wise: Naive Bayes")
+```
+
+```{r ROC,warning=FALSE,message=FALSE,fig.align='center'}
+# ROC
+# install.packages("pROC")
+library(pROC)
+roc.rf <- roc(valid.df$pop_factor.n, valid.df$pred_rf.prob$X1)
+roc.lr <- roc(valid.df$pop_factor.n, valid.df$pred_lr.prob$X1)
+roc.nb <- roc(valid.df$pop_factor.n, valid.df$pred_nb.prob$X1)
+
+plot(roc.rf,col="red")
+par(new=TRUE)
+plot(roc.lr,col="green")
+par(new=TRUE)
+plot(roc.nb,col="blue")
+
+auc(roc.rf)
+auc(roc.lr)
+auc(roc.nb)
+```
+
+
+```{r Average,warning=FALSE,message=FALSE,fig.align='center'}
+# Ensemble using Averaging
+# Taking average of predicted probabilities
+valid.df$pred_avg<-(valid.df$pred_rf.prob$X1+valid.df$pred_lr.prob$X1+valid.df$pred_nb.prob$X1)/3
+
+#Splitting into binary classes at 0.5
+valid.df$pred_class<-as.factor(ifelse(valid.df$pred_avg>0.5,'X1','X0'))
+ensemble.averaging<-caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_class)
+
+# Ensemble using Majority Voting
+valid.df$pred_majority<-as.factor(ifelse(valid.df$pred_rf=='X1' & valid.df$pred_nb=='X1','X1',
+                          ifelse(valid.df$pred_rf=='X1' & valid.df$pred_lr=='X1','X1',
+                          ifelse(valid.df$pred_nb=='X1' & valid.df$pred_lr=='X1','X1','X0'))))
+ensemble.voting<-caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_majority)
+
+# Ensemble using Weighted Average
+# Taking weighted average of predictions
+valid.df$pred_weighted_avg<-(valid.df$pred_rf.prob$X1*0.25)+(valid.df$pred_lr.prob$X1*0.25)+(valid.df$pred_nb.prob$X1*0.5)
+#Splitting into binary classes at 0.5
+valid.df$pred_weighted_avg<-as.factor(ifelse(valid.df$pred_weighted_avg>0.5,'X1','X0'))
+ensemble.weighted<-caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_weighted_avg)
+
+con_rf<-caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_rf)
+con_lr<-caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_lr)
+con_nb<-caret::confusionMatrix(valid.df$pop_factor,valid.df$pred_nb)
+
+c1<-rbind("Averaging","Voting","Weighted","Random Forest", 
+          "Logistic Regress", "Naive Bayes")
+c2<-rbind(ensemble.averaging$overall[1],ensemble.voting$overall[1],
+          ensemble.weighted$overall[1],con_rf$overall[1],
+          con_lr$overall[1],con_nb$overall[1])
+D1<-cbind(c1,c2)
+D1
+```
+
+## Results and Discussion
+
+## Summary 
+From the above model created we can see that the best model till now is the Random Forest regression with accuracy rate of 61%. We are trying to better fit the data and come up with better prediction model by doing feature engineering and variable selection. 
+
+
+
+
+
+
